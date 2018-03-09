@@ -8,7 +8,7 @@ import (
 
 func main() {
 	log.Println("Starting...")
-	conn, err := queue.ConnectLoop("publicapi_webhook", 500)
+	conn, err := queue.ConnectLoop("test_queue", 500)
 	if err != nil {
 		log.Fatal(err)
 	}

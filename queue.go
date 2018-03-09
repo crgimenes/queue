@@ -22,8 +22,8 @@ func init() {
 }
 
 // Conn return a pointer to beanstalk or error
-func Conn(tube string) (c *beanstalk.Conn, err error) {
-	c, err = beanstalk.Dial("tcp", tube)
+func Conn(addr string) (c *beanstalk.Conn, err error) {
+	c, err = beanstalk.Dial("tcp", addr)
 	return
 }
 
@@ -31,8 +31,9 @@ func Conn(tube string) (c *beanstalk.Conn, err error) {
 func ConnectLoop(tube string, retries int) (conn *beanstalk.Conn, err error) {
 	attempt := 0
 	for {
-		conn, err = bs.Conn(tube)
+		conn, err = bs.Conn("127.0.0.1:11300")
 		if err == nil {
+			conn.Tube.Name = tube
 			return
 		}
 		log.Errorln(err)
