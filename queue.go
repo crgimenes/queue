@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,10 @@ type bsf struct {
 	Conn func(tube string) (c *beanstalk.Conn, err error)
 }
 
-var bs bsf
+var (
+	bs              bsf
+	errThereIsNoJob = errors.New("there is no job to be reserved")
+)
 
 func init() {
 	bs.Conn = Conn
@@ -28,12 +30,11 @@ func Conn(addr string) (c *beanstalk.Conn, err error) {
 }
 
 // ConnectLoop try to connect beanstalk and retry if error
-func ConnectLoop(tube string, retries int) (conn *beanstalk.Conn, err error) {
+func ConnectLoop(addr string, retries int) (conn *beanstalk.Conn, err error) {
 	attempt := 0
 	for {
-		conn, err = bs.Conn("127.0.0.1:11300")
+		conn, err = bs.Conn(addr)
 		if err == nil {
-			conn.Tube.Name = tube
 			return
 		}
 		log.Errorln(err)
@@ -46,9 +47,31 @@ func ConnectLoop(tube string, retries int) (conn *beanstalk.Conn, err error) {
 	}
 }
 
-type messagePayload struct {
-	Name    string          `json:"name"`
-	Payload json.RawMessage `json:"payload"`
+// interactWithQueue get for valid jobs in queue and send to handler function
+func interactWithQueue(tubeSet beanstalk.TSI, handler func(payload []byte) (err error)) (err error) {
+	id, body, err := tubeSet.Reserve(5 * time.Second)
+	if err != nil {
+		cerr, ok := err.(beanstalk.ConnError)
+		if ok && cerr.Err == beanstalk.ErrTimeout && id == 0 {
+			// there is no job to be reserved
+			err = errThereIsNoJob
+			return
+		}
+		log.Errorln(err)
+		return
+	}
+
+	if id == 0 || len(body) == 0 {
+		err = fmt.Errorf("zero id %v", string(body))
+		return
+	}
+
+	err = handler(body)
+	if err != nil {
+		return
+	}
+	err = tubeSet.Delete(id)
+	return
 }
 
 func closer(body io.Closer) {
@@ -58,47 +81,24 @@ func closer(body io.Closer) {
 	}
 }
 
-func Loop(conn *beanstalk.Conn) {
+// Listen connect to queue server and wait for messages from the queue
+func Listen(addr, tube string, handler func(payload []byte) (err error)) {
+	conn, err := ConnectLoop(addr, 500)
+	if err != nil {
+		log.Errorln(err)
+		return
+	}
 	defer closer(conn)
-	ts := beanstalk.NewTubeSet(conn, conn.Tube.Name)
-	defer closer(ts.Conn)
 
+	ts := beanstalk.NewTubeSet(conn, tube)
 	for {
 		<-time.After(time.Duration(2) * time.Second)
-		id, body, err := ts.Conn.PeekReady()
+		err = interactWithQueue(ts, handler)
 		if err != nil {
-			continue
-		}
-		// if the ID is 0, continue (do not know why the ID is coming empty)
-		// or if body is empty, continue
-		if id == 0 || len(body) == 0 {
-			continue
-		}
-
-		msg := messagePayload{}
-
-		err = json.Unmarshal(body, &msg)
-		if err != nil {
-			log.Println(err)
-			err = ts.Conn.Delete(id)
-			if err != nil {
-				log.Errorln(err)
+			if err == errThereIsNoJob {
+				continue
 			}
-			continue
+			log.Errorln(err)
 		}
-
-		id, body, err = ts.Reserve(5 * time.Second)
-		if cerr, ok := err.(beanstalk.ConnError); ok &&
-			cerr.Err == beanstalk.ErrTimeout &&
-			id != 0 {
-			log.Errorf("beanstalk id: %v, err: %v, body: %q\n", id, cerr, string(body))
-			err = ts.Conn.Delete(id)
-			if err != nil {
-				log.Errorln(err)
-			}
-			continue
-		}
-
-		fmt.Println("beanstalk id: %v, body: %q\n", id, string(body))
 	}
 }
